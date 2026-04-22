@@ -1,17 +1,34 @@
 import os
 from dotenv import load_dotenv
+from config_helpers import get_env, parse_admin_ids, normalize_channel_username, validate_config, print_startup_diagnostics
 
 # Try to load .env from multiple possible locations
 load_dotenv()  # Load from current directory
 load_dotenv('/app/.env')  # Load from /app directory (container path)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",") if id.strip()]
-CLOSED_CHANNEL_USERNAME = os.getenv("CLOSED_CHANNEL_USERNAME", "")
-DATABASE_PATH = os.getenv("DATABASE_PATH", "bot_database.db")
+# Load and normalize configuration
+BOT_TOKEN = get_env("BOT_TOKEN")
+ADMIN_IDS = parse_admin_ids(get_env("ADMIN_IDS", ""))
+CLOSED_CHANNEL_USERNAME = normalize_channel_username(get_env("CLOSED_CHANNEL_USERNAME", ""))
+DATABASE_PATH = get_env("DATABASE_PATH", "bot_database.db")
 
-# Debug output
-print(f"BOT_TOKEN loaded: {'YES' if BOT_TOKEN else 'NO'}")
-print(f"BOT_TOKEN length: {len(BOT_TOKEN) if BOT_TOKEN else 0}")
-print(f"ADMIN_IDS: {ADMIN_IDS}")
-print(f"CLOSED_CHANNEL_USERNAME: {CLOSED_CHANNEL_USERNAME}")
+# Validate configuration
+config = {
+    "BOT_TOKEN": BOT_TOKEN,
+    "ADMIN_IDS": ADMIN_IDS,
+    "CLOSED_CHANNEL_USERNAME": CLOSED_CHANNEL_USERNAME,
+    "DATABASE_PATH": DATABASE_PATH
+}
+
+is_valid, errors = validate_config(config)
+if not is_valid:
+    print("=" * 50)
+    print("CONFIGURATION ERROR")
+    print("=" * 50)
+    for error in errors:
+        print(f"❌ {error}")
+    print("=" * 50)
+    raise ValueError(f"Configuration validation failed: {', '.join(errors)}")
+
+# Print startup diagnostics (without secrets)
+print_startup_diagnostics()
