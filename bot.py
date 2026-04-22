@@ -114,17 +114,20 @@ async def search_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message_id=media['channel_message_id']
         )
         
-        # Send media info
+        # Convert genres to hashtags
+        genres_list = media['genres'].split(',')
+        hashtags = ' '.join([f"#{genre.strip().lower()}" for genre in genres_list])
+        
+        # Send media info in requested format
         info_message = f"""
-✅ *Kinoni topdim!*
+{{ {media['number']}
 
-🎬 *Nomi:* {media['title']}
-📺 *Turi:* {media['type']}
-🎭 *Janrlar:* {media['genres']}
-🔢 *Raqami:* #{media['number']}
+[{media['title']}]
+
+{hashtags} }}
         """
         
-        await update.message.reply_text(info_message, parse_mode='Markdown')
+        await update.message.reply_text(info_message)
         
     except Exception as e:
         logger.error(f"Error copying message: {e}")
