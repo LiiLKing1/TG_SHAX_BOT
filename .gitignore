@@ -12,7 +12,7 @@ dist/
 build/
 
 # Environment
-# .env
+.env
 
 # Database
 *.db
