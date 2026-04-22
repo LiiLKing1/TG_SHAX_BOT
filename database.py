@@ -45,6 +45,24 @@ class Database:
                     added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS movies (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    movie_code TEXT UNIQUE NOT NULL,
+                    title TEXT NOT NULL,
+                    genres TEXT,
+                    caption TEXT,
+                    channel_chat_id TEXT NOT NULL,
+                    channel_message_id INTEGER NOT NULL,
+                    media_type TEXT,
+                    file_id TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    is_active INTEGER DEFAULT 1
+                )
+            ''')
+            await db.execute('CREATE INDEX IF NOT EXISTS idx_movies_title ON movies(title)')
+            await db.execute('CREATE INDEX IF NOT EXISTS idx_movies_channel_message_id ON movies(channel_message_id)')
             await db.commit()
     
     async def add_media(self, number: int, title: str, media_type: str, genres: str, channel_message_id: int) -> bool:
@@ -198,3 +216,56 @@ class Database:
             async with db.execute('SELECT channel_username FROM mandatory_channels') as cursor:
                 rows = await cursor.fetchall()
                 return [row[0] for row in rows]
+    
+    async def upsert_movie(self, movie_code: str, title: str, genres: str, caption: str, 
+                          channel_chat_id: str, channel_message_id: int, 
+                          media_type: str, file_id: str) -> bool:
+        """Upsert movie record using INSERT ... ON CONFLICT"""
+        async with aiosqlite.connect(self.db_path) as db:
+            try:
+                await db.execute('''
+                    INSERT INTO movies (movie_code, title, genres, caption, channel_chat_id, channel_message_id, media_type, file_id, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(movie_code) DO UPDATE SET
+                        title = excluded.title,
+                        genres = excluded.genres,
+                        caption = excluded.caption,
+                        channel_chat_id = excluded.channel_chat_id,
+                        channel_message_id = excluded.channel_message_id,
+                        media_type = excluded.media_type,
+                        file_id = excluded.file_id,
+                        updated_at = CURRENT_TIMESTAMP
+                ''', (movie_code, title, genres, caption, channel_chat_id, channel_message_id, media_type, file_id))
+                await db.commit()
+                return True
+            except Exception as e:
+                print(f"Error upserting movie: {e}")
+                return False
+    
+    async def find_movie_by_code(self, movie_code: str) -> Optional[Dict]:
+        """Find movie by code"""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute('''
+                SELECT movie_code, title, genres, caption, channel_chat_id, channel_message_id, media_type, file_id
+                FROM movies WHERE movie_code = ? AND is_active = 1
+            ''', (movie_code,)) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    return {
+                        'movie_code': row[0],
+                        'title': row[1],
+                        'genres': row[2],
+                        'caption': row[3],
+                        'channel_chat_id': row[4],
+                        'channel_message_id': row[5],
+                        'media_type': row[6],
+                        'file_id': row[7]
+                    }
+                return None
+    
+    async def get_movies_count(self) -> int:
+        """Get total count of indexed movies"""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute('SELECT COUNT(*) FROM movies WHERE is_active = 1') as cursor:
+                result = await cursor.fetchone()
+                return result[0] if result else 0

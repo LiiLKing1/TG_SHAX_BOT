@@ -3,6 +3,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 from database import Database
 from admin import AdminPanel
 from utils import check_subscription, send_subscription_message
+from movie_helpers import handle_channel_post, handle_movie_search
 from config import BOT_TOKEN, ADMIN_IDS, CLOSED_CHANNEL_USERNAME
 import logging
 
@@ -77,7 +78,7 @@ Botdan foydalanish uchun majburiy kanallarga obuna bo'lish shart.
     await update.message.reply_text(help_message, parse_mode='Markdown')
 
 async def search_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle media search by number"""
+    """Handle media search by number (legacy - uses new movie indexing system)"""
     user = update.effective_user
     
     # Check subscription
@@ -94,10 +95,10 @@ async def search_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Iltimos, raqam kiriting!")
         return
     
-    # Search for media in database
-    media = await db.get_media_by_number(number)
+    # Search for movie in new movies table
+    movie = await db.find_movie_by_code(str(number))
     
-    if not media:
+    if not movie:
         await update.message.reply_text(f"❌ #{number} raqamli kino topilmadi!")
         return
     
@@ -105,26 +106,22 @@ async def search_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await db.increment_search_count(user.id)
     await db.add_search_history(user.id, number)
     
-    # Get media from closed channel
+    # Get media from channel
     try:
-        # Copy the message from the closed channel
+        # Copy the message from the channel
         await context.bot.copy_message(
             chat_id=update.effective_chat.id,
-            from_chat_id=CLOSED_CHANNEL_USERNAME,
-            message_id=media['channel_message_id']
+            from_chat_id=movie['channel_chat_id'],
+            message_id=movie['channel_message_id']
         )
-        
-        # Convert genres to hashtags
-        genres_list = media['genres'].split(',')
-        hashtags = ' '.join([f"#{genre.strip().lower()}" for genre in genres_list])
         
         # Send media info in requested format
         info_message = f"""
-{{ {media['number']}
+{{ {movie['movie_code']}
 
-[{media['title']}]
+[{movie['title']}]
 
-{hashtags} }}
+{movie['genres']} }}
         """
         
         await update.message.reply_text(info_message)
@@ -134,9 +131,8 @@ async def search_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"❌ Kinoni olishda xatolik yuz berdi.\n\n"
             f"Ma'lumot:\n"
-            f"🎬 {media['title']}\n"
-            f"📺 {media['type']}\n"
-            f"🎭 {media['genres']}"
+            f"🎬 {movie['title']}\n"
+            f"🎭 {movie['genres']}"
         )
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -258,6 +254,50 @@ async def remove_channel_command(update: Update, context: ContextTypes.DEFAULT_T
     else:
         await update.message.reply_text(f"❌ {channel_username} topilmadi!")
 
+async def find_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /find command to search movie by code"""
+    await handle_movie_search(update, context, db)
+
+async def movie_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /movie command to search movie by code"""
+    await handle_movie_search(update, context, db)
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /stats command to show indexed movies count (admin only)"""
+    user_id = update.effective_user.id
+    
+    if not admin_panel.is_admin(user_id):
+        await update.message.reply_text("❌ Siz admin emassiz!")
+        return
+    
+    movies_count = await db.get_movies_count()
+    await update.message.reply_text(f"📊 Index bo'lgan kinolar: {movies_count}")
+
+async def reindex_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /reindex_help command"""
+    help_text = """
+📚 *Eski kinolarni index qilish*
+
+Bot faqat o'zi olgan `channel_post`/`edited_channel_post` update'larini index qiladi.
+
+Eski kanal postlarini avtomatik bot API orqali scan qilmaydi.
+
+Eski kinolarni index qilish uchun:
+1. Kinolarni qayta post qiling
+2. Yoki tahrirlab yangidan update tushiring
+
+Bu usul kinolarni avtomatik ravishda index qiladi.
+    """
+    await update.message.reply_text(help_text, parse_mode='Markdown')
+
+async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle channel posts for indexing"""
+    await handle_channel_post(update, context, db, CLOSED_CHANNEL_USERNAME)
+
+async def edited_channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle edited channel posts for updating index"""
+    await handle_channel_post(update, context, db, CLOSED_CHANNEL_USERNAME)
+
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle callback queries from inline keyboards"""
     query = update.callback_query
@@ -273,6 +313,8 @@ async def post_init(application: Application) -> None:
     """Initialize database after bot starts"""
     await db.init_db()
     logger.info("Database initialized successfully")
+    logger.info(f"Target channel: {CLOSED_CHANNEL_USERNAME}")
+    logger.info("Movie indexer ready")
 
 def main():
     """Start the bot"""
@@ -287,9 +329,21 @@ def main():
     application.add_handler(CommandHandler("delete", delete_media_command))
     application.add_handler(CommandHandler("addchannel", add_channel_command))
     application.add_handler(CommandHandler("removechannel", remove_channel_command))
+    application.add_handler(CommandHandler("find", find_command))
+    application.add_handler(CommandHandler("movie", movie_command))
+    application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("reindex_help", reindex_help_command))
     
     # Handle messages (numbers for search)
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_media))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, search_media))
+    
+    # Handle channel posts for indexing
+    application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.Document.ALL, channel_post_handler), group=1)
+    application.add_handler(MessageHandler(filters.Caption, channel_post_handler), group=1)
+    
+    # Handle edited channel posts
+    application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.Document.ALL, edited_channel_post_handler), group=1)
+    application.add_handler(MessageHandler(filters.Caption, edited_channel_post_handler), group=1)
     
     # Handle callback queries
     application.add_handler(CallbackQueryHandler(callback_handler))
